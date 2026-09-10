@@ -110,14 +110,60 @@ const sd=a=>{if(a.length<2)return NaN;let m=avg(a);return Math.sqrt(a.reduce((s,
 const S={imgs:[],i:-1,rois:[],sel:null,tool:'pan',z:1,px:0,py:0,invert:false,drag:false,mode:null,start:null,draft:null};
 const cv=$('cv'),ctx=cv.getContext('2d'),off=document.createElement('canvas'),ox=off.getContext('2d');
 const cur=()=>S.imgs[S.i]||null,stat=t=>$('status').textContent=t;
-function parse(buf,name){let by=new Uint8Array(buf),ds=dicomParser.parseDicom(by),ts=ds.string('x00020010')||'',r=ds.uint16('x00280010'),c=ds.uint16('x00280011'),bits=ds.uint16('x00280100')||16,sg=(ds.uint16('x00280103')||0)===1;
+function parse(buf,name){
+ let by=new Uint8Array(buf),ds;
+ try{
+   ds=dicomParser.parseDicom(by);
+ }catch(firstError){
+   try{
+     ds=dicomParser.parseDicom(by,{TransferSyntaxUID:'1.2.840.10008.1.2'});
+   }catch(secondError){
+     throw Error('Not a readable DICOM Part 10/raw DICOM file.');
+   }
+ }
+ let ts=ds.string('x00020010')||'1.2.840.10008.1.2',
+     r=ds.uint16('x00280010'),
+     c=ds.uint16('x00280011'),
+     bits=ds.uint16('x00280100')||16,
+     sg=(ds.uint16('x00280103')||0)===1;
  if(ts.startsWith('1.2.840.10008.1.2.4')||ts==='1.2.840.10008.1.2.5')throw Error(name+': compressed DICOM is not supported.');
  if(!r||!c||(ds.uint16('x00280002')||1)!==1)throw Error(name+': only single-frame monochrome DICOM is supported.');
  let e=ds.elements.x7fe00010;if(!e)throw Error(name+': Pixel Data not found.');let little=ts!=='1.2.840.10008.1.2.2',dv=new DataView(by.buffer,by.byteOffset+e.dataOffset,e.length),sl=parseFloat(ds.string('x00281053')||'1')||1,it=parseFloat(ds.string('x00281052')||'0')||0,p=new Float32Array(r*c),mn=Infinity,mx=-Infinity;
  for(let j=0;j<p.length;j++){let v=bits===8?(sg?dv.getInt8(j):dv.getUint8(j)):bits===16?(sg?dv.getInt16(j*2,little):dv.getUint16(j*2,little)):NaN;if(!Number.isFinite(v))throw Error('Only 8/16-bit data are supported.');p[j]=v*sl+it;mn=Math.min(mn,p[j]);mx=Math.max(mx,p[j])}
  let ps=(ds.string('x00280030')||'').split('\\\\').map(Number),num=t=>parseFloat((ds.string(t)||'').split('\\\\')[0]);
  return{id:uid(),name,rows:r,cols:c,p,min:mn,max:mx,slope:sl,intercept:it,dx:ps[1]||null,dy:ps[0]||null,mod:ds.string('x00080060')||'',photo:ds.string('x00280004')||'MONOCHROME2',wc:num('x00281050'),ww:num('x00281051'),series:ds.string('x0008103e')||'',study:ds.string('x00081030')||'',inst:ds.string('x00200013')||'',thick:ds.string('x00180050')||'',kvp:ds.string('x00180060')||'',kernel:ds.string('x00181210')||''}}
-async function load(fs){for(let f of fs)try{S.imgs.push(parse(await f.arrayBuffer(),f.name))}catch(e){alert(e.message)}if(S.imgs.length){S.i=S.imgs.length-1;S.rois=[];S.sel=null;prep();fit();all();stat('DICOM loaded.')}}
+async function load(fs){
+  if(typeof dicomParser==='undefined'){
+    alert('The DICOM parser library did not load. Please check the internet connection and reload the page.');
+    stat('DICOM parser unavailable.');
+    return;
+  }
+  let loaded=0;
+  const errors=[];
+  stat(`Reading ${fs.length} file(s)…`);
+  for(const f of fs){
+    try{
+      const img=parse(await f.arrayBuffer(),f.name);
+      S.imgs.push(img);
+      loaded++;
+    }catch(e){
+      errors.push(`${f.name}: ${e.message}`);
+      console.error(e);
+    }
+  }
+  if(loaded>0){
+    S.i=S.imgs.length-1;
+    S.rois=[];
+    S.sel=null;
+    prep();
+    fit();
+    all();
+    stat(`${loaded} DICOM image(s) loaded successfully.${errors.length ? ` ${errors.length} file(s) could not be opened.` : ''}`);
+  }else{
+    stat('No DICOM image could be loaded.');
+  }
+  if(errors.length) alert(errors.join('\n\n'));
+}
 const fileInput=$('files');
 $('drop').addEventListener('click',()=>fileInput.click());
 fileInput.addEventListener('change',async e=>{
@@ -136,11 +182,11 @@ $('drop').ondrop=e=>{
 };
 function prep(){let im=cur();if(!im)return;off.width=im.cols;off.height=im.rows;setWL(Number.isFinite(im.wc)?im.wc:(im.min+im.max)/2,Number.isFinite(im.ww)&&im.ww>0?im.ww:im.max-im.min||1,false);paint();meta()}
 function setWL(l,w,go=true){w=Math.max(1,w);$('wl').value=l.toFixed(1);$('ww').value=w.toFixed(1);$('wlr').value=clamp(l,-1500,3000);$('wwr').value=clamp(w,1,5000);if(go){paint();render()}}
-function paint(){let im=cur();if(!im)return,l=+$('wl').value,w=Math.max(1,+$('ww').value),lo=l-w/2,hi=l+w/2,id=ox.createImageData(im.cols,im.rows),d=id.data,m1=im.photo==='MONOCHROME1';for(let i=0;i<im.p.length;i++){let g=clamp((im.p[i]-lo)/(hi-lo),0,1);if(m1)g=1-g;if(S.invert)g=1-g;let c=Math.round(g*255),j=i*4;d[j]=d[j+1]=d[j+2]=c;d[j+3]=255}ox.putImageData(id,0,0)}
+function paint(){let im=cur();if(!im)return;let l=+$('wl').value,w=Math.max(1,+$('ww').value),lo=l-w/2,hi=l+w/2,id=ox.createImageData(im.cols,im.rows),d=id.data,m1=im.photo==='MONOCHROME1';for(let i=0;i<im.p.length;i++){let g=clamp((im.p[i]-lo)/(hi-lo),0,1);if(m1)g=1-g;if(S.invert)g=1-g;let c=Math.round(g*255),j=i*4;d[j]=d[j+1]=d[j+2]=c;d[j+3]=255}ox.putImageData(id,0,0)}
 ['wl','ww'].forEach(x=>$(x).oninput=()=>setWL(+$('wl').value,+$('ww').value));$('wlr').oninput=()=>setWL(+$('wlr').value,+$('ww').value);$('wwr').oninput=()=>setWL(+$('wl').value,+$('wwr').value);
-$('auto').onclick=()=>{let im=cur();if(!im)return,a=Array.from(im.p).sort((a,b)=>a-b),lo=a[Math.floor(a.length*.01)],hi=a[Math.floor(a.length*.99)];setWL((lo+hi)/2,hi-lo)};$('invert').onclick=()=>{S.invert=!S.invert;paint();render()};
+$('auto').onclick=()=>{let im=cur();if(!im)return;let a=Array.from(im.p).sort((a,b)=>a-b),lo=a[Math.floor(a.length*.01)],hi=a[Math.floor(a.length*.99)];setWL((lo+hi)/2,hi-lo)};$('invert').onclick=()=>{S.invert=!S.invert;paint();render()};
 function resize(){let r=$('view').getBoundingClientRect();cv.width=r.width*devicePixelRatio;cv.height=r.height*devicePixelRatio;render()}window.onresize=resize;
-function fit(){let im=cur();if(!im)return,w=cv.width/devicePixelRatio,h=cv.height/devicePixelRatio;S.z=Math.min(w/im.cols,h/im.rows)*.94;S.px=w/2;S.py=h/2;render()}
+function fit(){let im=cur();if(!im)return;let w=cv.width/devicePixelRatio,h=cv.height/devicePixelRatio;S.z=Math.min(w/im.cols,h/im.rows)*.94;S.px=w/2;S.py=h/2;render()}
 $('fit').onclick=fit;$('reset').onclick=()=>{S.z=1;let im=cur();if(im){S.px=im.cols/2;S.py=im.rows/2}render()};
 const s2i=(x,y)=>{let im=cur();return[(x-S.px)/S.z+im.cols/2,(y-S.py)/S.z+im.rows/2]},i2s=(x,y)=>{let im=cur();return[S.px+(x-im.cols/2)*S.z,S.py+(y-im.rows/2)*S.z]};
 function render(){let w=cv.width/devicePixelRatio,h=cv.height/devicePixelRatio;ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);ctx.clearRect(0,0,w,h);let im=cur();if(!im){$('hud').textContent='No image';return}ctx.save();ctx.translate(S.px,S.py);ctx.scale(S.z,S.z);ctx.drawImage(off,-im.cols/2,-im.rows/2);ctx.restore();for(let r of S.rois){let sel=r.id===S.sel;ctx.strokeStyle=sel?'#78c9f3':'#fff';ctx.lineWidth=sel?2.2:1.3;if(r.shape==='rect'){let a=i2s(r.x,r.y),b=i2s(r.x+r.w,r.y+r.h);ctx.strokeRect(a[0],a[1],b[0]-a[0],b[1]-a[1])}else{let c=i2s(r.x,r.y);ctx.beginPath();ctx.arc(c[0],c[1],r.r*S.z,0,Math.PI*2);ctx.stroke()}ctx.fillStyle=sel?'#78c9f3':'#fff';ctx.font='11px Arial';let q=r.shape==='rect'?i2s(r.x,r.y):i2s(r.x-r.r,r.y-r.r);ctx.fillText(r.name,q[0]+4,q[1]-4)}$('hud').textContent=`${im.name} · ${im.cols}×${im.rows} · ${im.mod||'DICOM'}`}
@@ -159,10 +205,15 @@ function list(){let b=$('roiList');b.innerHTML=S.rois.length?'':'<div class="sma
 function stats(){let r=S.rois.find(r=>r.id===S.sel),im=cur();if(!r||!im){$('roiTitle').textContent='No ROI selected';['mMean','mSD','mMin','mMax','mN','mArea'].forEach(x=>$(x).textContent='—');return}let q=rs(r);$('roiTitle').textContent=r.name;$('mMean').textContent=q.m.toFixed(2);$('mSD').textContent=q.s.toFixed(2);$('mMin').textContent=q.mn.toFixed(2);$('mMax').textContent=q.mx.toFixed(2);$('mN').textContent=q.n;$('mArea').textContent=q.area.toFixed(2);$('areaUnit').textContent=q.unit;$('unit1').textContent=$('unit2').textContent=im.mod==='CT'?'HU':'PV'}
 function meta(){let im=cur();if(!im){$('meta').innerHTML='<tr><td>—</td><td>—</td></tr>';return}let a=[['File',im.name],['Modality',im.mod||'—'],['Matrix',`${im.cols} × ${im.rows}`],['Pixel spacing',im.dx&&im.dy?`${im.dx} × ${im.dy} mm`:'—'],['Rescale slope',im.slope],['Rescale intercept',im.intercept],['Photometric',im.photo],['Study',im.study||'—'],['Series',im.series||'—'],['Instance',im.inst||'—'],['Slice thickness',im.thick||'—'],['kVp',im.kvp||'—'],['Kernel',im.kernel||'—']];$('meta').innerHTML=a.map(x=>`<tr><td>${x[0]}</td><td>${x[1]}</td></tr>`).join('')}
 function all(){list();stats();meta();render();$('fileInfo').textContent=cur()?`${S.i+1} / ${S.imgs.length} · ${cur().name}`:'No image loaded.'}
-$('rename').onclick=()=>{let r=S.rois.find(r=>r.id===S.sel);if(!r)return,n=prompt('ROI name:',r.name);if(n&&n.trim()){r.name=n.trim();all()}};$('delRoi').onclick=()=>{if(!S.sel)return;S.rois=S.rois.filter(r=>r.id!==S.sel);S.sel=null;all()};$('clear').onclick=()=>{if(S.rois.length&&confirm('Clear all ROIs?')){S.rois=[];S.sel=null;all()}};
+$('rename').onclick=()=>{let r=S.rois.find(r=>r.id===S.sel);if(!r)return;let n=prompt('ROI name:',r.name);if(n&&n.trim()){r.name=n.trim();all()}};$('delRoi').onclick=()=>{if(!S.sel)return;S.rois=S.rois.filter(r=>r.id!==S.sel);S.sel=null;all()};$('clear').onclick=()=>{if(S.rois.length&&confirm('Clear all ROIs?')){S.rois=[];S.sel=null;all()}};
 $('calc').onclick=()=>{let a=S.rois.find(r=>r.id===$('sig').value),b=S.rois.find(r=>r.id===$('bg').value);if(!a||!b)return alert('Select both signal and background ROIs.');let A=rs(a),B=rs(b),sn=A.s>0?Math.abs(A.m)/A.s:NaN,cn=B.s>0?Math.abs(A.m-B.m)/B.s:NaN,de=Math.sqrt(A.s*A.s+B.s*B.s),dn=de>0?Math.abs(A.m-B.m)/de:NaN;$('snr').textContent=Number.isFinite(sn)?sn.toFixed(3):'—';$('cnr').textContent=Number.isFinite(cn)?cn.toFixed(3):'—';$('sdnr').textContent=Number.isFinite(dn)?dn.toFixed(3):'—'};
 $('prev').onclick=()=>{if(S.imgs.length<2)return;S.i=(S.i-1+S.imgs.length)%S.imgs.length;S.rois=[];S.sel=null;prep();fit();all()};$('next').onclick=()=>{if(S.imgs.length<2)return;S.i=(S.i+1)%S.imgs.length;S.rois=[];S.sel=null;prep();fit();all()};
 $('del').onclick=()=>{if(S.i<0||!confirm('Delete current image?'))return;S.imgs.splice(S.i,1);S.rois=[];S.sel=null;if(!S.imgs.length){S.i=-1;all();stat('No image loaded.')}else{S.i=Math.min(S.i,S.imgs.length-1);prep();fit();all()}};$('delAll').onclick=()=>{if(S.imgs.length&&confirm('Delete all images?')){S.imgs=[];S.i=-1;S.rois=[];S.sel=null;all();stat('No image loaded.')}};
 $('learn').onclick=()=>$('drawer').classList.add('open');$('close').onclick=()=>$('drawer').classList.remove('open');
 resize();all();
+if(typeof dicomParser==='undefined'){
+  stat('DICOM parser failed to load. Reload the page with an internet connection.');
+}else{
+  stat('Ready. Load a DICOM image to begin.');
+}
 </script></body></html>
