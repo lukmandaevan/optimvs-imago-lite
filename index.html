@@ -107,7 +107,7 @@ table{width:100%;border-collapse:collapse;font-size:9px}td{padding:4px 2px;borde
 <script>
 const $=x=>document.getElementById(x),clamp=(x,a,b)=>Math.max(a,Math.min(b,x)),avg=a=>a.reduce((s,v)=>s+v,0)/a.length;
 const sd=a=>{if(a.length<2)return NaN;let m=avg(a);return Math.sqrt(a.reduce((s,v)=>s+(v-m)**2,0)/(a.length-1))},uid=()=>Math.random().toString(36).slice(2);
-const S={imgs:[],i:-1,rois:[],sel:null,tool:'pan',z:1,px:0,py:0,invert:false,drag:false,mode:null,start:null,draft:null};
+const S={imgs:[],i:-1,rois:[],sel:null,tool:'pan',z:1,px:0,py:0,invert:false,drag:false,mode:null,start:null,draft:null,viewW:1,viewH:1,fitMode:true};
 const cv=$('cv'),ctx=cv.getContext('2d'),off=document.createElement('canvas'),ox=off.getContext('2d');
 const cur=()=>S.imgs[S.i]||null,stat=t=>$('status').textContent=t;
 function parse(buf,name){
@@ -156,7 +156,8 @@ async function load(fs){
     S.rois=[];
     S.sel=null;
     prep();
-    fit();
+    syncCanvas(false);
+    fit(true);
     all();
     stat(`${loaded} DICOM image(s) loaded successfully.${errors.length ? ` ${errors.length} file(s) could not be opened.` : ''}`);
   }else{
@@ -185,32 +186,201 @@ function setWL(l,w,go=true){w=Math.max(1,w);$('wl').value=l.toFixed(1);$('ww').v
 function paint(){let im=cur();if(!im)return;let l=+$('wl').value,w=Math.max(1,+$('ww').value),lo=l-w/2,hi=l+w/2,id=ox.createImageData(im.cols,im.rows),d=id.data,m1=im.photo==='MONOCHROME1';for(let i=0;i<im.p.length;i++){let g=clamp((im.p[i]-lo)/(hi-lo),0,1);if(m1)g=1-g;if(S.invert)g=1-g;let c=Math.round(g*255),j=i*4;d[j]=d[j+1]=d[j+2]=c;d[j+3]=255}ox.putImageData(id,0,0)}
 ['wl','ww'].forEach(x=>$(x).oninput=()=>setWL(+$('wl').value,+$('ww').value));$('wlr').oninput=()=>setWL(+$('wlr').value,+$('ww').value);$('wwr').oninput=()=>setWL(+$('wl').value,+$('wwr').value);
 $('auto').onclick=()=>{let im=cur();if(!im)return;let a=Array.from(im.p).sort((a,b)=>a-b),lo=a[Math.floor(a.length*.01)],hi=a[Math.floor(a.length*.99)];setWL((lo+hi)/2,hi-lo)};$('invert').onclick=()=>{S.invert=!S.invert;paint();render()};
-function resize(){let r=$('view').getBoundingClientRect();cv.width=r.width*devicePixelRatio;cv.height=r.height*devicePixelRatio;render()}window.onresize=resize;
-function fit(){let im=cur();if(!im)return;let w=cv.width/devicePixelRatio,h=cv.height/devicePixelRatio;S.z=Math.min(w/im.cols,h/im.rows)*.94;S.px=w/2;S.py=h/2;render()}
-$('fit').onclick=fit;$('reset').onclick=()=>{S.z=1;let im=cur();if(im){S.px=im.cols/2;S.py=im.rows/2}render()};
-const s2i=(x,y)=>{let im=cur();return[(x-S.px)/S.z+im.cols/2,(y-S.py)/S.z+im.rows/2]},i2s=(x,y)=>{let im=cur();return[S.px+(x-im.cols/2)*S.z,S.py+(y-im.rows/2)*S.z]};
-function render(){let w=cv.width/devicePixelRatio,h=cv.height/devicePixelRatio;ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);ctx.clearRect(0,0,w,h);let im=cur();if(!im){$('hud').textContent='No image';return}ctx.save();ctx.translate(S.px,S.py);ctx.scale(S.z,S.z);ctx.drawImage(off,-im.cols/2,-im.rows/2);ctx.restore();for(let r of S.rois){let sel=r.id===S.sel;ctx.strokeStyle=sel?'#78c9f3':'#fff';ctx.lineWidth=sel?2.2:1.3;if(r.shape==='rect'){let a=i2s(r.x,r.y),b=i2s(r.x+r.w,r.y+r.h);ctx.strokeRect(a[0],a[1],b[0]-a[0],b[1]-a[1])}else{let c=i2s(r.x,r.y);ctx.beginPath();ctx.arc(c[0],c[1],r.r*S.z,0,Math.PI*2);ctx.stroke()}ctx.fillStyle=sel?'#78c9f3':'#fff';ctx.font='11px Arial';let q=r.shape==='rect'?i2s(r.x,r.y):i2s(r.x-r.r,r.y-r.r);ctx.fillText(r.name,q[0]+4,q[1]-4)}$('hud').textContent=`${im.name} · ${im.cols}×${im.rows} · ${im.mod||'DICOM'}`}
+function syncCanvas(refit=false){
+  const box=$('view').getBoundingClientRect();
+  const w=Math.max(1,box.width), h=Math.max(1,box.height);
+  const dpr=Math.max(1,window.devicePixelRatio||1);
+  const sizeChanged=Math.abs(S.viewW-w)>.5||Math.abs(S.viewH-h)>.5;
+  S.viewW=w; S.viewH=h;
+  const bw=Math.max(1,Math.round(w*dpr)), bh=Math.max(1,Math.round(h*dpr));
+  if(cv.width!==bw||cv.height!==bh){cv.width=bw;cv.height=bh}
+  if(cur() && sizeChanged && (refit||S.fitMode)) fit(false);
+  else render();
+}
+function resize(){syncCanvas(false)}
+window.addEventListener('resize',resize);
+if(window.ResizeObserver){
+  new ResizeObserver(()=>syncCanvas(false)).observe($('view'));
+}
+
+function fit(draw=true){
+  let im=cur(); if(!im)return;
+  S.z=Math.min(S.viewW/im.cols,S.viewH/im.rows)*.94;
+  S.px=S.viewW/2; S.py=S.viewH/2; S.fitMode=true;
+  if(draw)render();
+}
+$('fit').onclick=()=>fit(true);
+$('reset').onclick=()=>{
+  let im=cur(); if(!im)return;
+  S.z=1; S.px=S.viewW/2; S.py=S.viewH/2; S.fitMode=false; render();
+};
+
+function eventToCanvas(e){
+  const b=cv.getBoundingClientRect();
+  return [
+    (e.clientX-b.left)*(S.viewW/Math.max(1,b.width)),
+    (e.clientY-b.top)*(S.viewH/Math.max(1,b.height))
+  ];
+}
+const s2i=(x,y)=>{
+  let im=cur();
+  return[(x-S.px)/S.z+im.cols/2,(y-S.py)/S.z+im.rows/2];
+};
+const i2s=(x,y)=>{
+  let im=cur();
+  return[S.px+(x-im.cols/2)*S.z,S.py+(y-im.rows/2)*S.z];
+};
+
+function render(){
+  const dpr=Math.max(1,window.devicePixelRatio||1),w=S.viewW,h=S.viewH;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,w,h);
+  let im=cur();
+  if(!im){$('hud').textContent='No image';return}
+
+  // Draw image with one identical scale factor in X and Y.
+  // This guarantees that the DICOM matrix is never stretched or squeezed.
+  ctx.imageSmoothingEnabled=false;
+  ctx.save();
+  ctx.translate(S.px,S.py);
+  ctx.scale(S.z,S.z);
+  ctx.drawImage(off,-im.cols/2,-im.rows/2,im.cols,im.rows);
+  ctx.restore();
+
+  for(let r of S.rois){
+    let sel=r.id===S.sel;
+    ctx.strokeStyle=sel?'#78c9f3':'#fff';
+    ctx.lineWidth=sel?2.2:1.3;
+    if(r.shape==='rect'){
+      let a=i2s(r.x,r.y),b=i2s(r.x+r.w,r.y+r.h);
+      ctx.strokeRect(a[0],a[1],b[0]-a[0],b[1]-a[1]);
+    }else{
+      let c=i2s(r.x,r.y);
+      ctx.beginPath();ctx.arc(c[0],c[1],r.r*S.z,0,Math.PI*2);ctx.stroke();
+    }
+    ctx.fillStyle=sel?'#78c9f3':'#fff';
+    ctx.font='11px Arial';
+    let q=r.shape==='rect'?i2s(r.x,r.y):i2s(r.x-r.r,r.y-r.r);
+    ctx.fillText(r.name,q[0]+4,q[1]-4);
+  }
+  $('hud').textContent=`${im.name} · ${im.cols}×${im.rows} · ${im.mod||'DICOM'}`;
+}
 function tool(t){S.tool=t;['pan','zoom','square','circle'].forEach(x=>$(x).classList.remove('active'));$(t==='rect'?'square':t).classList.add('active')} $('pan').onclick=()=>tool('pan');$('zoom').onclick=()=>tool('zoom');$('square').onclick=()=>tool('rect');$('circle').onclick=()=>tool('circle');
-cv.onwheel=e=>{if(!cur())return;e.preventDefault();let r=cv.getBoundingClientRect(),x=e.clientX-r.left,y=e.clientY-r.top,b=s2i(x,y),f=e.deltaY<0?1.12:1/1.12;S.z=clamp(S.z*f,.05,30);let a=i2s(b[0],b[1]);S.px+=x-a[0];S.py+=y-a[1];render()};
+cv.onwheel=e=>{if(!cur())return;e.preventDefault();let [x,y]=eventToCanvas(e),b=s2i(x,y),f=e.deltaY<0?1.12:1/1.12;S.z=clamp(S.z*f,.05,30);S.fitMode=false;let a=i2s(b[0],b[1]);S.px+=x-a[0];S.py+=y-a[1];render()};
 function hit(x,y){for(let k=S.rois.length-1;k>=0;k--){let r=S.rois[k],tol=Math.max(3,6/S.z);if(r.shape==='circle'){let d=Math.hypot(x-r.x,y-r.y);if(Math.abs(d-r.r)<tol)return[r,'resize'];if(d<r.r)return[r,'move']}else{let ins=x>=r.x&&x<=r.x+r.w&&y>=r.y&&y<=r.y+r.h;if(ins&&Math.min(x-r.x,r.x+r.w-x,y-r.y,r.y+r.h-y)<tol)return[r,'resize'];if(ins)return[r,'move']}}return null}
-cv.onmousedown=e=>{if(!cur())return;let b=cv.getBoundingClientRect(),sx=e.clientX-b.left,sy=e.clientY-b.top,[x,y]=s2i(sx,sy);S.drag=true;S.start={sx,sy,x,y,px:S.px,py:S.py,wl:+$('wl').value,ww:+$('ww').value};if(e.shiftKey){S.mode='wl';return}let h=hit(x,y);if(h){S.sel=h[0].id;S.mode=h[1];S.start.r0=JSON.parse(JSON.stringify(h[0]));all();return}if(S.tool==='rect'||S.tool==='circle'){S.mode='draw';S.draft={shape:S.tool,x0:x,y0:y};return}S.mode=S.tool};
-cv.onmousemove=e=>{if(!cur())return;let b=cv.getBoundingClientRect(),sx=e.clientX-b.left,sy=e.clientY-b.top,[x,y]=s2i(sx,sy),im=cur(),xi=Math.floor(x),yi=Math.floor(y);$('cursor').innerHTML=xi>=0&&yi>=0&&xi<im.cols&&yi<im.rows?`x ${xi} · y ${yi}<br>${im.mod==='CT'?'HU':'PV'} ${im.p[yi*im.cols+xi].toFixed(2)}`:'x — · y —<br>PV/HU —';if(!S.drag)return;
- if(S.mode==='wl'){setWL(S.start.wl-(sy-S.start.sy)*2,S.start.ww+(sx-S.start.sx)*4);return}if(S.mode==='pan'){S.px=S.start.px+sx-S.start.sx;S.py=S.start.py+sy-S.start.sy;render();return}if(S.mode==='zoom'){S.z=clamp(S.z*Math.exp(-(sy-S.start.sy)*.01),.05,30);S.start.sy=sy;render();return}
- if(S.mode==='draw'){S.draft.x1=x;S.draft.y1=y;render();ctx.strokeStyle='#78c9f3';ctx.lineWidth=2;if(S.draft.shape==='rect'){let side=Math.max(Math.abs(x-S.draft.x0),Math.abs(y-S.draft.y0)),a=i2s(S.draft.x0,S.draft.y0),bb=i2s(S.draft.x0+(x>=S.draft.x0?side:-side),S.draft.y0+(y>=S.draft.y0?side:-side));ctx.strokeRect(a[0],a[1],bb[0]-a[0],bb[1]-a[1])}else{let c=i2s(S.draft.x0,S.draft.y0);ctx.beginPath();ctx.arc(c[0],c[1],Math.hypot(x-S.draft.x0,y-S.draft.y0)*S.z,0,Math.PI*2);ctx.stroke()}return}
- let r0=S.rois.find(r=>r.id===S.sel),o=S.start.r0;if(!r0||!o)return;if(S.mode==='move'){let dx=x-S.start.x,dy=y-S.start.y;r0.x=o.x+dx;r0.y=o.y+dy}else if(S.mode==='resize'){if(r0.shape==='circle')r0.r=Math.max(2,Math.hypot(x-r0.x,y-r0.y));else{let cx=o.x+o.w/2,cy=o.y+o.h/2,side=Math.max(4,2*Math.max(Math.abs(x-cx),Math.abs(y-cy)));r0.x=cx-side/2;r0.y=cy-side/2;r0.w=r0.h=side}}render();stats()};
+cv.onmousedown=e=>{
+ if(!cur())return;
+ let [sx,sy]=eventToCanvas(e),[x,y]=s2i(sx,sy);
+ S.drag=true;
+ S.start={sx,sy,x,y,px:S.px,py:S.py,wl:+$('wl').value,ww:+$('ww').value};
+ if(e.shiftKey){S.mode='wl';return}
+ let h=hit(x,y);
+ if(h){S.sel=h[0].id;S.mode=h[1];S.start.r0=JSON.parse(JSON.stringify(h[0]));all();return}
+ if(S.tool==='rect'||S.tool==='circle'){S.mode='draw';S.draft={shape:S.tool,x0:x,y0:y};return}
+ S.mode=S.tool;
+};
+cv.onmousemove=e=>{
+ if(!cur())return;
+ let [sx,sy]=eventToCanvas(e),[x,y]=s2i(sx,sy),im=cur(),xi=Math.floor(x),yi=Math.floor(y);
+ $('cursor').innerHTML=xi>=0&&yi>=0&&xi<im.cols&&yi<im.rows
+   ?`x ${xi} · y ${yi}<br>${im.mod==='CT'?'HU':'PV'} ${im.p[yi*im.cols+xi].toFixed(2)}`
+   :'x — · y —<br>PV/HU —';
+ if(!S.drag)return;
+ if(S.mode==='wl'){setWL(S.start.wl-(sy-S.start.sy)*2,S.start.ww+(sx-S.start.sx)*4);return}
+ if(S.mode==='pan'){S.px=S.start.px+sx-S.start.sx;S.py=S.start.py+sy-S.start.sy;S.fitMode=false;render();return}
+ if(S.mode==='zoom'){S.z=clamp(S.z*Math.exp(-(sy-S.start.sy)*.01),.05,30);S.start.sy=sy;S.fitMode=false;render();return}
+ if(S.mode==='draw'){
+   S.draft.x1=x;S.draft.y1=y;render();
+   ctx.strokeStyle='#78c9f3';ctx.lineWidth=2;
+   if(S.draft.shape==='rect'){
+     let side=Math.max(Math.abs(x-S.draft.x0),Math.abs(y-S.draft.y0)),
+         a=i2s(S.draft.x0,S.draft.y0),
+         bb=i2s(S.draft.x0+(x>=S.draft.x0?side:-side),S.draft.y0+(y>=S.draft.y0?side:-side));
+     ctx.strokeRect(a[0],a[1],bb[0]-a[0],bb[1]-a[1]);
+   }else{
+     let c=i2s(S.draft.x0,S.draft.y0);
+     ctx.beginPath();ctx.arc(c[0],c[1],Math.hypot(x-S.draft.x0,y-S.draft.y0)*S.z,0,Math.PI*2);ctx.stroke();
+   }
+   return;
+ }
+ let r0=S.rois.find(r=>r.id===S.sel),o=S.start.r0;
+ if(!r0||!o)return;
+ if(S.mode==='move'){
+   let dx=x-S.start.x,dy=y-S.start.y;r0.x=o.x+dx;r0.y=o.y+dy;
+ }else if(S.mode==='resize'){
+   if(r0.shape==='circle')r0.r=Math.max(2,Math.hypot(x-r0.x,y-r0.y));
+   else{
+     let cx=o.x+o.w/2,cy=o.y+o.h/2,side=Math.max(4,2*Math.max(Math.abs(x-cx),Math.abs(y-cy)));
+     r0.x=cx-side/2;r0.y=cy-side/2;r0.w=r0.h=side;
+   }
+ }
+ render();stats();
+};
+cv.onmouseleave=()=>{if(S.drag&&S.mode!=='draw'){S.drag=false;S.mode=null;S.start=null}};
 cv.onmouseup=()=>{if(S.mode==='draw'&&S.draft&&S.draft.x1!=null){let d=S.draft,n=$('rname').value.trim()||`ROI ${S.rois.length+1}`;if(d.shape==='rect'){let side=Math.max(Math.abs(d.x1-d.x0),Math.abs(d.y1-d.y0));if(side>=2){let r={id:uid(),name:n,shape:'rect',x:d.x1>=d.x0?d.x0:d.x0-side,y:d.y1>=d.y0?d.y0:d.y0-side,w:side,h:side};S.rois.push(r);S.sel=r.id}}else{let rr=Math.hypot(d.x1-d.x0,d.y1-d.y0);if(rr>=2){let r={id:uid(),name:n,shape:'circle',x:d.x0,y:d.y0,r:rr};S.rois.push(r);S.sel=r.id}}$('rname').value=`ROI ${S.rois.length+1}`;S.draft=null;all()}S.drag=false;S.mode=null;S.start=null};
 function vals(r){let im=cur(),a=[];if(!im)return a;if(r.shape==='rect'){for(let y=Math.max(0,Math.floor(r.y));y<Math.min(im.rows,Math.ceil(r.y+r.h));y++)for(let x=Math.max(0,Math.floor(r.x));x<Math.min(im.cols,Math.ceil(r.x+r.w));x++)a.push(im.p[y*im.cols+x])}else{for(let y=Math.max(0,Math.floor(r.y-r.r));y<=Math.min(im.rows-1,Math.ceil(r.y+r.r));y++)for(let x=Math.max(0,Math.floor(r.x-r.r));x<=Math.min(im.cols-1,Math.ceil(r.x+r.r));x++)if((x+.5-r.x)**2+(y+.5-r.y)**2<=r.r*r.r)a.push(im.p[y*im.cols+x])}return a}
-function rs(r){let a=vals(r);if(!a.length)return null,m=avg(a),s=sd(a),mn=Math.min(...a),mx=Math.max(...a),im=cur(),pa=im.dx&&im.dy?im.dx*im.dy:null;return{m,s,mn,mx,n:a.length,area:a.length*(pa||1),unit:pa?'mm²':'px²'}}
+function rs(r){
+  const a=vals(r);
+  if(!a.length)return null;
+  const m=avg(a);
+  const s=sd(a);
+  const mn=Math.min(...a);
+  const mx=Math.max(...a);
+  const im=cur();
+  const pa=(Number.isFinite(im.dx)&&Number.isFinite(im.dy))?im.dx*im.dy:null;
+  return {m,s,mn,mx,n:a.length,area:a.length*(pa||1),unit:pa?'mm²':'px²'};
+}
 function list(){let b=$('roiList');b.innerHTML=S.rois.length?'':'<div class="small" style="padding:8px">No ROIs.</div>';S.rois.forEach(r=>{let d=document.createElement('div');d.className='roi'+(r.id===S.sel?' active':'');d.innerHTML=`<b>${r.name}</b><br>${r.shape==='rect'?'Square':'Circle'}`;d.onclick=()=>{S.sel=r.id;all()};b.appendChild(d)});['sig','bg'].forEach(id=>{let q=$(id),old=q.value;q.innerHTML='<option value="">Select ROI</option>';S.rois.forEach(r=>q.add(new Option(r.name,r.id)));if(S.rois.some(r=>r.id===old))q.value=old})}
-function stats(){let r=S.rois.find(r=>r.id===S.sel),im=cur();if(!r||!im){$('roiTitle').textContent='No ROI selected';['mMean','mSD','mMin','mMax','mN','mArea'].forEach(x=>$(x).textContent='—');return}let q=rs(r);$('roiTitle').textContent=r.name;$('mMean').textContent=q.m.toFixed(2);$('mSD').textContent=q.s.toFixed(2);$('mMin').textContent=q.mn.toFixed(2);$('mMax').textContent=q.mx.toFixed(2);$('mN').textContent=q.n;$('mArea').textContent=q.area.toFixed(2);$('areaUnit').textContent=q.unit;$('unit1').textContent=$('unit2').textContent=im.mod==='CT'?'HU':'PV'}
+function stats(){
+  let r=S.rois.find(r=>r.id===S.sel),im=cur();
+  if(!r||!im){
+    $('roiTitle').textContent='No ROI selected';
+    ['mMean','mSD','mMin','mMax','mN','mArea'].forEach(x=>$(x).textContent='—');
+    $('areaUnit').textContent='';
+    return;
+  }
+  let q=rs(r);
+  if(!q){
+    $('roiTitle').textContent=r.name;
+    ['mMean','mSD','mMin','mMax','mN','mArea'].forEach(x=>$(x).textContent='—');
+    return;
+  }
+  $('roiTitle').textContent=r.name;
+  $('mMean').textContent=Number.isFinite(q.m)?q.m.toFixed(2):'—';
+  $('mSD').textContent=Number.isFinite(q.s)?q.s.toFixed(2):'—';
+  $('mMin').textContent=Number.isFinite(q.mn)?q.mn.toFixed(2):'—';
+  $('mMax').textContent=Number.isFinite(q.mx)?q.mx.toFixed(2):'—';
+  $('mN').textContent=q.n;
+  $('mArea').textContent=Number.isFinite(q.area)?q.area.toFixed(2):'—';
+  $('areaUnit').textContent=q.unit;
+  $('unit1').textContent=$('unit2').textContent=im.mod==='CT'?'HU':'PV';
+}
 function meta(){let im=cur();if(!im){$('meta').innerHTML='<tr><td>—</td><td>—</td></tr>';return}let a=[['File',im.name],['Modality',im.mod||'—'],['Matrix',`${im.cols} × ${im.rows}`],['Pixel spacing',im.dx&&im.dy?`${im.dx} × ${im.dy} mm`:'—'],['Rescale slope',im.slope],['Rescale intercept',im.intercept],['Photometric',im.photo],['Study',im.study||'—'],['Series',im.series||'—'],['Instance',im.inst||'—'],['Slice thickness',im.thick||'—'],['kVp',im.kvp||'—'],['Kernel',im.kernel||'—']];$('meta').innerHTML=a.map(x=>`<tr><td>${x[0]}</td><td>${x[1]}</td></tr>`).join('')}
 function all(){list();stats();meta();render();$('fileInfo').textContent=cur()?`${S.i+1} / ${S.imgs.length} · ${cur().name}`:'No image loaded.'}
 $('rename').onclick=()=>{let r=S.rois.find(r=>r.id===S.sel);if(!r)return;let n=prompt('ROI name:',r.name);if(n&&n.trim()){r.name=n.trim();all()}};$('delRoi').onclick=()=>{if(!S.sel)return;S.rois=S.rois.filter(r=>r.id!==S.sel);S.sel=null;all()};$('clear').onclick=()=>{if(S.rois.length&&confirm('Clear all ROIs?')){S.rois=[];S.sel=null;all()}};
-$('calc').onclick=()=>{let a=S.rois.find(r=>r.id===$('sig').value),b=S.rois.find(r=>r.id===$('bg').value);if(!a||!b)return alert('Select both signal and background ROIs.');let A=rs(a),B=rs(b),sn=A.s>0?Math.abs(A.m)/A.s:NaN,cn=B.s>0?Math.abs(A.m-B.m)/B.s:NaN,de=Math.sqrt(A.s*A.s+B.s*B.s),dn=de>0?Math.abs(A.m-B.m)/de:NaN;$('snr').textContent=Number.isFinite(sn)?sn.toFixed(3):'—';$('cnr').textContent=Number.isFinite(cn)?cn.toFixed(3):'—';$('sdnr').textContent=Number.isFinite(dn)?dn.toFixed(3):'—'};
+$('calc').onclick=()=>{
+  const a=S.rois.find(r=>r.id===$('sig').value);
+  const b=S.rois.find(r=>r.id===$('bg').value);
+  if(!a||!b){
+    alert('Select both a signal/object ROI and a background ROI.');
+    return;
+  }
+  const A=rs(a),B=rs(b);
+  if(!A||!B){alert('One or both ROIs contain no image pixels.');return}
+  const diff=Math.abs(A.m-B.m);
+  const sn=(Number.isFinite(A.s)&&A.s>0)?Math.abs(A.m)/A.s:NaN;
+  const cn=(Number.isFinite(B.s)&&B.s>0)?diff/B.s:NaN;
+  const den=Math.sqrt((Number.isFinite(A.s)?A.s*A.s:0)+(Number.isFinite(B.s)?B.s*B.s:0));
+  const dn=den>0?diff/den:NaN;
+  $('snr').textContent=Number.isFinite(sn)?sn.toFixed(3):'—';
+  $('cnr').textContent=Number.isFinite(cn)?cn.toFixed(3):'—';
+  $('sdnr').textContent=Number.isFinite(dn)?dn.toFixed(3):'—';
+  stat(`Calculated using “${a.name}” as signal and “${b.name}” as background.`);
+};
 $('prev').onclick=()=>{if(S.imgs.length<2)return;S.i=(S.i-1+S.imgs.length)%S.imgs.length;S.rois=[];S.sel=null;prep();fit();all()};$('next').onclick=()=>{if(S.imgs.length<2)return;S.i=(S.i+1)%S.imgs.length;S.rois=[];S.sel=null;prep();fit();all()};
 $('del').onclick=()=>{if(S.i<0||!confirm('Delete current image?'))return;S.imgs.splice(S.i,1);S.rois=[];S.sel=null;if(!S.imgs.length){S.i=-1;all();stat('No image loaded.')}else{S.i=Math.min(S.i,S.imgs.length-1);prep();fit();all()}};$('delAll').onclick=()=>{if(S.imgs.length&&confirm('Delete all images?')){S.imgs=[];S.i=-1;S.rois=[];S.sel=null;all();stat('No image loaded.')}};
 $('learn').onclick=()=>$('drawer').classList.add('open');$('close').onclick=()=>$('drawer').classList.remove('open');
-resize();all();
+syncCanvas(false);all();
 if(typeof dicomParser==='undefined'){
   stat('DICOM parser failed to load. Reload the page with an internet connection.');
 }else{
